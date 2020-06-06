@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import random
 import warnings
+from copy import deepcopy
 
 from generators.utils import get_affine_transform, affine_transform
 from generators.utils import gaussian_radius, draw_gaussian, gaussian_radius_2, draw_gaussian_2
@@ -19,14 +20,13 @@ class Generator(keras.utils.Sequence):
             self,
             multi_scale=False,
             multi_image_sizes=(320, 352, 384, 416, 448, 480, 512, 544, 576, 608),
-            misc_effect=None,
-            visual_effect=None,
             batch_size=1,
             group_method='ratio',  # one of 'none', 'random', 'ratio'
             shuffle_groups=True,
             input_size=512,
             max_objects=100,
-            cat_spec_wh= False
+            cat_spec_wh= False,
+            transformations=None
     ):
         """
         Initialize Generator object.
@@ -38,8 +38,6 @@ class Generator(keras.utils.Sequence):
             input_size:
             max_objects:
         """
-        self.misc_effect = misc_effect
-        self.visual_effect = visual_effect
         self.batch_size = int(batch_size)
         self.group_method = group_method
         self.shuffle_groups = shuffle_groups
@@ -51,6 +49,7 @@ class Generator(keras.utils.Sequence):
         self.multi_scale = multi_scale
         self.multi_image_sizes = multi_image_sizes
         self.current_index = 0
+        self.transformations = transformations
 
         # Define groups
         self.group_images()
@@ -170,108 +169,26 @@ class Generator(keras.utils.Sequence):
                 ))
         return image_group, annotations_group
 
-    def clip_transformed_annotations(self, image_group, annotations_group, group):
-        """
-        Filter annotations by removing those that are outside of the image bounds or whose width/height < 0.
-        """
-        # test all annotations
-        filtered_image_group = []
-        filtered_annotations_group = []
-        for index, (image, annotations) in enumerate(zip(image_group, annotations_group)):
-            image_height = image.shape[0]
-            image_width = image.shape[1]
-            # x1
-            annotations['bboxes'][:, 0] = np.clip(annotations['bboxes'][:, 0], 0, image_width - 2)
-            # y1
-            annotations['bboxes'][:, 1] = np.clip(annotations['bboxes'][:, 1], 0, image_height - 2)
-            # x2
-            annotations['bboxes'][:, 2] = np.clip(annotations['bboxes'][:, 2], 1, image_width - 1)
-            # y2
-            annotations['bboxes'][:, 3] = np.clip(annotations['bboxes'][:, 3], 1, image_height - 1)
-            # test x2 < x1 | y2 < y1 | x1 < 0 | y1 < 0 | x2 <= 0 | y2 <= 0 | x2 >= image.shape[1] | y2 >= image.shape[0]
-            small_indices = np.where(
-                (annotations['bboxes'][:, 2] - annotations['bboxes'][:, 0] < 10) |
-                (annotations['bboxes'][:, 3] - annotations['bboxes'][:, 1] < 10)
-            )[0]
-
-            # delete invalid indices
-            if len(small_indices):
-                for k in annotations_group[index].keys():
-                    annotations_group[index][k] = np.delete(annotations[k], small_indices, axis=0)
-                # import cv2
-                # for invalid_index in small_indices:
-                #     x1, y1, x2, y2 = annotations['bboxes'][invalid_index]
-                #     label = annotations['labels'][invalid_index]
-                #     class_name = self.labels[label]
-                #     print('width: {}'.format(x2 - x1))
-                #     print('height: {}'.format(y2 - y1))
-                #     cv2.rectangle(image, (int(round(x1)), int(round(y1))), (int(round(x2)), int(round(y2))), (0, 255, 0), 2)
-                #     cv2.putText(image, class_name, (int(round(x1)), int(round(y1))), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 1)
-                # cv2.namedWindow('image', cv2.WINDOW_NORMAL)
-                # cv2.imshow('image', image)
-                # cv2.waitKey(0)
-            if annotations_group[index]['bboxes'].shape[0] != 0:
-                filtered_image_group.append(image)
-                filtered_annotations_group.append(annotations_group[index])
-            else:
-                continue
-                warnings.warn('Image with id {} (shape {}) contains no valid boxes after transform'.format(
-                    group[index],
-                    image.shape,
-                ))
-
-        return filtered_image_group, filtered_annotations_group
-
     def load_image_group(self, group):
         """
         Load images for all images in a group.
         """
         return [self.load_image(image_index) for image_index in group]
 
-    def random_visual_effect_group_entry(self, image, annotations):
-        """
-        Randomly transforms image and annotation.
-        """
-        # apply visual effect
-        image = self.visual_effect(image)
-        return image, annotations
-
-    def random_visual_effect_group(self, image_group, annotations_group):
-        """
-        Randomly apply visual effect on each image.
-        """
-        assert (len(image_group) == len(annotations_group))
-
-        if self.visual_effect is None:
-            # do nothing
-            return image_group, annotations_group
-
-        for index in range(len(image_group)):
-            # apply effect on a single group entry
-            image_group[index], annotations_group[index] = self.random_visual_effect_group_entry(
-                image_group[index], annotations_group[index]
-            )
-
-        return image_group, annotations_group
-
-    def random_transform_group_entry(self, image, annotations, transform=None):
+    def random_transform_group_entry(self, image, annotations):
         """
         Randomly transforms image and annotation.
         """
         # randomly transform both image and annotations
-        if transform is not None or self.transform_generator:
-            if transform is None:
-                transform = adjust_transform_for_image(next(self.transform_generator), image,
-                                                       self.transform_parameters.relative_translation)
-
-            # apply transformation to image
-            image = apply_transform(transform, image, self.transform_parameters)
-
-            # Transform the bounding boxes in the annotations.
-            annotations['bboxes'] = annotations['bboxes'].copy()
-            for index in range(annotations['bboxes'].shape[0]):
-                annotations['bboxes'][index, :] = transform_aabb(transform, annotations['bboxes'][index, :])
-
+        if self.transformations is not None:
+            for transform in self.transformations:
+                labels = np.copy(annotations['labels'])
+                labels = np.expand_dims(labels, axis=-1)
+                bboxes = np.copy(annotations['bboxes'])
+                anno = np.concatenate([labels, bboxes],axis=-1)
+                image, anno_n = transform(image, anno)
+                annotations['labels'] = np.asarray([item[0] for item in anno_n])
+                annotations['bboxes'] = np.reshape(np.asarray([item[1:] for item in anno_n]),(-1,4))
         return image, annotations
 
     def random_transform_group(self, image_group, annotations_group):
@@ -285,65 +202,6 @@ class Generator(keras.utils.Sequence):
             # transform a single group entry
             image_group[index], annotations_group[index] = self.random_transform_group_entry(image_group[index],
                                                                                              annotations_group[index])
-
-        return image_group, annotations_group
-
-    def random_misc_group_entry(self, image, annotations):
-        """
-        Randomly transforms image and annotation.
-        """
-#         assert(annotations['bboxes'].shape[0] != 0)
-        if annotations['bboxes'].shape[0] == 0:
-            return image, annotations
-
-        # randomly transform both image and annotations
-        image, boxes = self.misc_effect(image, annotations['bboxes'])
-        # Transform the bounding boxes in the annotations.
-        annotations['bboxes'] = boxes
-        return image, annotations
-
-    def random_misc_group(self, image_group, annotations_group):
-        """
-        Randomly transforms each image and its annotations.
-        """
-
-        assert (len(image_group) == len(annotations_group))
-
-        if self.misc_effect is None:
-            return image_group, annotations_group
-
-        for index in range(len(image_group)):
-            # transform a single group entry
-            image_group[index], annotations_group[index] = self.random_misc_group_entry(image_group[index],
-                                                                                        annotations_group[index])
-
-        return image_group, annotations_group
-
-    def preprocess_group_entry(self, image, annotations):
-        """
-        Preprocess image and its annotations.
-        """
-
-        # preprocess the image
-        image, scale, offset_h, offset_w = self.preprocess_image(image)
-
-        # apply resizing to annotations too
-        annotations['bboxes'] *= scale
-        annotations['bboxes'][:, [0, 2]] += offset_w
-        annotations['bboxes'][:, [1, 3]] += offset_h
-        # print(annotations['bboxes'][:, [2, 3]] - annotations['bboxes'][:, [0, 1]])
-        return image, annotations
-
-    def preprocess_group(self, image_group, annotations_group):
-        """
-        Preprocess each image and its annotations in its group.
-        """
-        assert (len(image_group) == len(annotations_group))
-
-        for index in range(len(image_group)):
-            # preprocess a single group entry
-            image_group[index], annotations_group[index] = self.preprocess_group_entry(image_group[index],
-                                                                                       annotations_group[index])
 
         return image_group, annotations_group
 
@@ -388,10 +246,10 @@ class Generator(keras.utils.Sequence):
         for b, (image, annotations) in enumerate(zip(image_group, annotations_group)):
             c = np.array([image.shape[1] / 2., image.shape[0] / 2.], dtype=np.float32)
             s = max(image.shape[0], image.shape[1]) * 1.0
-            trans_input = get_affine_transform(c, s, self.input_size)
+            # trans_input = get_affine_transform(c, s, self.input_size)
 
             # inputs
-            image = self.preprocess_image(image, c, s, tgt_w=self.input_size, tgt_h=self.input_size)
+            image = self.preprocess_image(image)
             batch_images[b] = image
 
             # outputs
@@ -493,20 +351,11 @@ class Generator(keras.utils.Sequence):
         # check validity of annotations
         image_group, annotations_group = self.filter_annotations(image_group, annotations_group, group)
 
-        # randomly apply visual effect
-        image_group, annotations_group = self.random_visual_effect_group(image_group, annotations_group)
-        #
-        # # randomly transform data
-        # image_group, annotations_group = self.random_transform_group(image_group, annotations_group)
+        # randomly transform data
+        image_group, annotations_group = self.random_transform_group(image_group, annotations_group)
 
-        # randomly apply misc effect
-        image_group, annotations_group = self.random_misc_group(image_group, annotations_group)
-        #
-        # # perform preprocessing steps
-        # image_group, annotations_group = self.preprocess_group(image_group, annotations_group)
-        #
-        # # check validity of annotations
-        # image_group, annotations_group = self.clip_transformed_annotations(image_group, annotations_group, group)
+        # check validity of annotations
+        image_group, annotations_group = self.filter_annotations(image_group, annotations_group, group)
 
         if len(image_group) == 0:
             return None, None
@@ -560,26 +409,3 @@ class Generator(keras.utils.Sequence):
 #         image[..., 2] -= 123.68
         image = image/256.-0.5
         return image
-
-    def get_transformed_group(self, group):
-        image_group = self.load_image_group(group)
-        annotations_group = self.load_annotations_group(group)
-
-        # check validity of annotations
-        image_group, annotations_group = self.filter_annotations(image_group, annotations_group, group)
-
-        # randomly transform data
-        image_group, annotations_group = self.random_transform_group(image_group, annotations_group)
-        return image_group, annotations_group
-
-    def get_cropped_and_rotated_group(self, group):
-        image_group = self.load_image_group(group)
-        annotations_group = self.load_annotations_group(group)
-
-        # check validity of annotations
-        image_group, annotations_group = self.filter_annotations(image_group, annotations_group, group)
-
-        # randomly transform data
-        image_group, annotations_group = self.random_crop_group(image_group, annotations_group)
-        image_group, annotations_group = self.random_rotate_group(image_group, annotations_group)
-        return image_group, annotations_group

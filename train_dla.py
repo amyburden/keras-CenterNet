@@ -49,6 +49,7 @@ def get_session():
     Construct a modified tf session.
     """
     config = tf.ConfigProto()
+    # 根据程序需要来增加 gpu 的内存
     config.gpu_options.allow_growth = True
     return tf.Session(config=config)
 
@@ -158,8 +159,8 @@ def create_generators(args):
         )
 
         validation_generator = PascalVocGenerator(
-            '/opt/train_data/VOC_data/VOCdevkit/VOC2007/',
-            'test',
+            args.pascal_path,
+            'val',
             skip_difficult=True,
             shuffle_groups=False,
             **common_args
@@ -309,13 +310,16 @@ def main(args=None):
 
     num_classes = train_generator.num_classes()
     shape = (args.input_size,args.input_size,3)
-    dla_model = DLA(shape,return_levels=True)
-    model, prediction_model,debug_model = centernet(shape, dla_model, 20)
+    dla_model = DLA(shape, return_levels=True)
+    dla_seg = DLA_seg(shape, dla_model)
+    model, prediction_model, debug_model = centernet(shape,
+                                                     dla_seg,
+                                                     num_classes=num_classes)
 
     # create the model
     # print('Loading model, this may take a second...')
-    model.load_weights(args.snapshot)
-    model.compile(optimizer=Adam(lr=1e-6), loss={'centernet_loss': lambda y_true, y_pred: y_pred})
+    # model.load_weights(args.snapshot, by_name=True, skip_mismatch=True)
+    model.compile(optimizer=Adam(lr=1e-4), loss={'centernet_loss': lambda y_true, y_pred: y_pred})
     # model.compile(optimizer=SGD(lr=1e-5, momentum=0.9, nesterov=True, decay=1e-5),
     #               loss={'centernet_loss': lambda y_true, y_pred: y_pred})
 
@@ -323,13 +327,26 @@ def main(args=None):
     # print(model.summary())
 
     # create the callbacks
-    callbacks = create_callbacks(
-       model,
-       prediction_model,
-       validation_generator,
-       args,
-    )
-    
+    #callbacks = create_callbacks(
+    #    model,
+    #    prediction_model,
+    #    validation_generator,
+    #    args,
+    #)
+    # Define model callbacks.
+    from datetime import datetime
+    # TODO: Set the filepath under which you want to save the weights.
+    log_dir = './ckpt/'+datetime.strftime(datetime.now(), '%Y%m%d')+'_kidd_nir_192x256_new_anchor'
+    if not os.path.isdir(log_dir):
+        os.makedirs(log_dir)
+    model_checkpoint = ModelCheckpoint(filepath=log_dir+'/ssd7_0.8_epoch-{epoch:02d}_loss-{loss:.4f}_val_loss-{val_loss:.4f}.h5',
+                                       monitor='val_loss',
+                                       verbose=1,
+                                       save_best_only=True,
+                                       save_weights_only=False,
+                                       mode='auto',
+                                       period=1)   
+    callbacks = [model_checkpoint]
     if not args.compute_val_loss:
         validation_generator = None
 

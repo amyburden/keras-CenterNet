@@ -39,12 +39,19 @@ def evaluate_coco(generator, model, threshold=0.05):
     for index in trange(generator.size(), desc='COCO evaluation: '):
         image = generator.load_image(index)
         src_image = image.copy()
+        c = np.array([image.shape[1] / 2., image.shape[0] / 2.], dtype=np.float32)
+        s = max(image.shape[0], image.shape[1]) * 1.0
+        tgt_w = generator.input_size
+        tgt_h = generator.input_size
+        image = generator.preprocess_image(image, c, s, tgt_w=tgt_w, tgt_h=tgt_h)
+        
         image_shape = image.shape[:2]
         image_shape = np.array(image_shape)
-        image = generator.preprocess_image(image)
+        
 
         # run network
-        detections = model.predict_on_batch([np.expand_dims(image, axis=0), np.expand_dims(image_shape, axis=0)])[0]
+#         detections = model.predict_on_batch([np.expand_dims(image, axis=0), np.expand_dims(image_shape, axis=0)])[0]
+        detections = model.predict_on_batch(np.expand_dims(image, axis=0))[0]
 
         # change to (x, y, w, h) (MS COCO standard)
         boxes = np.zeros((detections.shape[0], 4), dtype=np.int32)
@@ -73,14 +80,14 @@ def evaluate_coco(generator, model, threshold=0.05):
             }
             # append detection to results
             results.append(image_result)
-            class_name = generator.label_to_name(class_id)
-            ret, baseline = cv2.getTextSize(class_name, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-            cv2.rectangle(src_image, (box[0], box[1]), (box[0] + box[2], box[1] + box[3]), (0, 255, 0), 1)
-            cv2.putText(src_image, class_name, (box[0], box[1] + box[3] - baseline), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                        (0, 0, 0), 1)
-        cv2.namedWindow('image', cv2.WINDOW_NORMAL)
-        cv2.imshow('image', src_image)
-        cv2.waitKey(0)
+#             class_name = generator.label_to_name(class_id)
+#             ret, baseline = cv2.getTextSize(class_name, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+#             cv2.rectangle(src_image, (box[0], box[1]), (box[0] + box[2], box[1] + box[3]), (0, 255, 0), 1)
+#             cv2.putText(src_image, class_name, (box[0], box[1] + box[3] - baseline), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+#                         (0, 0, 0), 1)
+#         cv2.namedWindow('image', cv2.WINDOW_NORMAL)
+#         cv2.imshow('image', src_image)
+#         cv2.waitKey(0)
         # append image to list of processed images
         image_ids.append(generator.image_ids[index])
 
@@ -108,7 +115,7 @@ class CocoEval(keras.callbacks.Callback):
     """ Performs COCO evaluation on each epoch.
     """
 
-    def __init__(self, generator, tensorboard=None, threshold=0.05):
+    def __init__(self, generator,model, tensorboard=None, threshold=0.05):
         """ CocoEval callback intializer.
 
         Args
@@ -119,6 +126,7 @@ class CocoEval(keras.callbacks.Callback):
         self.generator = generator
         self.threshold = threshold
         self.tensorboard = tensorboard
+        self.active_model = model
 
         super(CocoEval, self).__init__()
 
@@ -137,7 +145,7 @@ class CocoEval(keras.callbacks.Callback):
                     'AR @[ IoU=0.50:0.95 | area= small | maxDets=100 ]',
                     'AR @[ IoU=0.50:0.95 | area=medium | maxDets=100 ]',
                     'AR @[ IoU=0.50:0.95 | area= large | maxDets=100 ]']
-        coco_eval_stats = evaluate_coco(self.generator, self.model, self.threshold)
+        coco_eval_stats = evaluate_coco(self.generator, self.active_model, self.threshold)
         if coco_eval_stats is not None and self.tensorboard is not None and self.tensorboard.writer is not None:
             import tensorflow as tf
             summary = tf.Summary()
