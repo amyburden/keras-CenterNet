@@ -127,8 +127,6 @@ class CocoGenerator(Generator):
         path = os.path.join(self.data_dir, self.set_name, image_info['file_name'])
         image = cv2.imread(path)
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        # bodong
-#         image = image/256.-0.5
         return image
 
     def load_annotations(self, image_index):

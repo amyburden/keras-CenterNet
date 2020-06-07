@@ -11,7 +11,7 @@ The network is anchor-free. It is quite simple, fast and accurate.
 
 | backbone | mAP<sub>50</sub> |
 | ---- | ---- |
-| resnet50 | 0.7290 | 
+| resnet18 | 0.62 | 
 
 3. The weights of resnet backbones can be downloaded from [fizyr/keras-models](https://github.com/fizyr/keras-models/releases).  
 Pretrained centernet model is here. [baidu netdisk](https://pan.baidu.com/s/1nZz7PBIwshep5xXm-HrNCQ) extract code: pti9 [google driver](https://drive.google.com/open?id=150A04vG3AT8TC02_gBnR1oHMMJh6VFbv)

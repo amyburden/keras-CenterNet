@@ -21,7 +21,7 @@ import json
 from tqdm import trange
 import cv2
 
-from generators.coco import CocoGenerator
+from generators.utils import get_affine_transform, affine_transform
 
 
 def evaluate_coco(generator, model, threshold=0.05):
@@ -39,38 +39,40 @@ def evaluate_coco(generator, model, threshold=0.05):
     for index in trange(generator.size(), desc='COCO evaluation: '):
         image = generator.load_image(index)
         src_image = image.copy()
+        h_src, w_src = src_image.shape[:2]
         c = np.array([image.shape[1] / 2., image.shape[0] / 2.], dtype=np.float32)
         s = max(image.shape[0], image.shape[1]) * 1.0
         tgt_w = generator.input_size
         tgt_h = generator.input_size
+        scale = max(1.0*w_src / tgt_w, 1.0*h_src / tgt_h)
+
+        trans_input = get_affine_transform(c, s, (tgt_w, tgt_h))
         image = generator.preprocess_image(image, c, s, tgt_w=tgt_w, tgt_h=tgt_h)
-        
-        image_shape = image.shape[:2]
-        image_shape = np.array(image_shape)
-        
+        shift = affine_transform([0, 0], trans_input)
+        shift = np.r_[shift,shift]
+        # image_shape = image.shape[:2]
+        # image_shape = np.array(image_shape)
 
         # run network
 #         detections = model.predict_on_batch([np.expand_dims(image, axis=0), np.expand_dims(image_shape, axis=0)])[0]
         detections = model.predict_on_batch(np.expand_dims(image, axis=0))[0]
 
-        # change to (x, y, w, h) (MS COCO standard)
-        boxes = np.zeros((detections.shape[0], 4), dtype=np.int32)
-        # xmin
-        boxes[:, 0] = np.maximum(np.round(detections[:, 1]).astype(np.int32), 0)
-        # ymin
-        boxes[:, 1] = np.maximum(np.round(detections[:, 0]).astype(np.int32), 0)
-        # w
-        boxes[:, 2] = np.minimum(np.round(detections[:, 3] - detections[:, 1]).astype(np.int32), image_shape[1])
-        # h
-        boxes[:, 3] = np.minimum(np.round(detections[:, 2] - detections[:, 0]).astype(np.int32), image_shape[0])
+        boxes = detections[:, :4]
         scores = detections[:, 4]
         class_ids = detections[:, 5].astype(np.int32)
+
         # compute predicted labels and scores
         for box, score, class_id in zip(boxes, scores, class_ids):
             # scores are sorted, so we can break
             if score < threshold:
                 break
 
+            # 512/128 = 4
+            box = (box * 4-shift)*scale
+            box = np.clip(box, [0., 0., 0., 0.],
+                               [w_src, h_src, w_src, h_src])
+            # change to (x, y, w, h) (MS COCO standard)
+            box[2:] = box[2:]-box[:2]
             # append detection for each positively labeled class
             image_result = {
                 'image_id': generator.image_ids[index],
